@@ -2,6 +2,7 @@ package gocache
 
 import (
 	"fmt"
+	"github.com/TheR1sing3un/gocache/gocache/singleflight"
 	"log"
 	"sync"
 )
@@ -31,6 +32,8 @@ type Group struct {
 	mainCache cache
 	//远程节点数据的Picker
 	peers PeerPicker
+	//singleflight,防止缓存击穿
+	loader *singleflight.Group
 }
 
 var (
@@ -55,6 +58,7 @@ func NewGroup(name string, maxBytes int64, getter Getter) *Group {
 		mainCache: cache{
 			cacheBytes: maxBytes,
 		},
+		loader: &singleflight.Group{},
 	}
 	//加入到group集合
 	groups[name] = g
@@ -88,24 +92,30 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
-//从远程获取
+//从远程获取节点或者从数据源获取
 func (g *Group) load(key string) (value ByteView, err error) {
-	//先从远程节点获取
-	if g.peers != nil {
-		if peerGetter, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peerGetter, key); err == nil {
-				//当peerGetter获取数据无异常时
-				return value, nil
+	val, err := g.loader.Do(key, func() (interface{}, error) {
+		//先从远程节点获取
+		if g.peers != nil {
+			if peerGetter, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peerGetter, key); err == nil {
+					//当peerGetter获取数据无异常时
+					return value, nil
+				}
+				//远程节点获取数据错误时
+				log.Println("[GoCache] Failed to get from peer", err)
 			}
-			//远程节点获取数据错误时
-			log.Println("[GoCache] Failed to get from peer", err)
 		}
+		//数据源获取
+		return g.getLocally(key)
+	})
+	if err != nil {
+		return
 	}
-	//本地数据源获取
-	return g.getLocally(key)
+	return val.(ByteView), err
 }
 
-//从本地获取
+//从数据源获取
 func (g *Group) getLocally(key string) (ByteView, error) {
 	//使用Get方法来从数据源中获取数据
 	v, err := g.getter.Get(key)
