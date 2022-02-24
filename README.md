@@ -1,2 +1,2 @@
 # GoCache
-GoLang实现的玩具级分布式存储
+GoLang实现的玩具级分布式缓存
